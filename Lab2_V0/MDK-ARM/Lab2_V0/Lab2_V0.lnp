@@ -21,6 +21,8 @@
 "lab2_v0\stm32f4xx_hal_exti.o"
 "lab2_v0\stm32f4xx_hal_i2c.o"
 "lab2_v0\stm32f4xx_hal_i2c_ex.o"
+"lab2_v0\stm32f4xx_hal_rtc.o"
+"lab2_v0\stm32f4xx_hal_rtc_ex.o"
 "lab2_v0\stm32f4xx_hal_tim.o"
 "lab2_v0\stm32f4xx_hal_tim_ex.o"
 "lab2_v0\stm32f4xx_hal_uart.o"

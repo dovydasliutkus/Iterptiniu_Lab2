@@ -53,6 +53,8 @@ DMA_HandleTypeDef hdma_adc1;
 
 I2C_HandleTypeDef hi2c1;
 
+RTC_HandleTypeDef hrtc;
+
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim6;
 
@@ -71,6 +73,7 @@ static void MX_ADC1_Init(void);
 static void MX_TIM6_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_RTC_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -80,19 +83,20 @@ static void MX_USART1_UART_Init(void);
 #define NUM_ADC_CHANNELS 2
 #define TOTAL_SAMPLES 15 // Nes 15*0.2s = 3s
 #define ADC_BUF_LEN 2
-#define ENABLE_SLEEP
-
+//#define ENABLE_SLEEP
+#define ENABLE_STOP
+//#define SEND_SLEEP_TIME
 Statechart sc_handle; // Statechart pointer
 float Temperature, Pressure, Humidity; // Variables for I2C data
 float DataBufferI2C[TOTAL_SAMPLES];
-int cycle_end=0, once=0;
+int once=0;
 
 uint16_t volatile adc_rawdata[ADC_BUF_LEN];
 uint16_t DataBufferADC1[TOTAL_SAMPLES];
 uint16_t DataBufferADC2[TOTAL_SAMPLES];
 
 float sumI2C,sumADC1,sumADC2,vidI2C,vidADC1,vidADC2;
- double sleep_start, sleep_end, sleep_sum, start, end, total_time;
+double sleep_start, sleep_end, sleep_sum, start = 0, end, total_time;
  
  double measure_stamps[15];
  int measure_nr=0;
@@ -112,12 +116,18 @@ void MyErrorHandlerADC()
 void MyErrorHandler(){
 	while(1);
 }
-
+/*
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 	if(htim==&htim6){
 		HAL_ResumeTick();
 		statechart_raise_timerIntr(&sc_handle);
 	}
+}
+*/
+void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc){
+	SystemClock_Config();
+	HAL_ResumeTick();
+	statechart_raise_timerIntr(&sc_handle);
 }
 // STATECHART FUNCTIONS
 void statechart_readI2CSensor(Statechart* handle){
@@ -143,11 +153,15 @@ void statechart_readI2CSensor(Statechart* handle){
 
 void statechart_saveI2CSample( Statechart* handle, const sc_integer sample){
 	DataBufferI2C[sample] = Temperature;
+	HAL_ADC_Start_DMA(&hadc1,(uint32_t*)adc_rawdata,NUM_ADC_CHANNELS);
 }
 
 void statechart_saveADCSample(Statechart* handle, const sc_integer channel, const sc_integer sample){
 		DataBufferADC1[sample] = adc_rawdata[0];
 		DataBufferADC2[sample] =  adc_rawdata[1];
+	
+		//ADcdisable
+		HAL_ADC_Stop_DMA(&hadc1);
 }
 void statechart_processData(Statechart* handle){
 	for(int i=0;i<TOTAL_SAMPLES;i++){
@@ -163,38 +177,32 @@ void statechart_processData(Statechart* handle){
 void statechart_displayInfo(Statechart* handle){
 	char buf[40];
 	SSD1306_Fill(0);
-  sprintf(buf,"Temp: %.2f",Temperature);
+  sprintf(buf,"Temp: %.2f",vidI2C);
 	SSD1306_GotoXY (10,10); // goto 10, 10 	
 	SSD1306_Puts (buf, &Font_7x10, 1); // print Hello 
 	SSD1306_GotoXY (10, 30); 
-	sprintf(buf,"ADC1:%hu",DataBufferADC1[0]);
+	sprintf(buf,"ADC1:%.0f",vidADC1);
 	SSD1306_Puts (buf, &Font_7x10, 1);
 	SSD1306_GotoXY(10,50);
-	sprintf(buf,"ADC2:%hu",DataBufferADC2[0]);
+	sprintf(buf,"ADC2:%.0f",vidADC2);
 	SSD1306_Puts(buf,&Font_7x10,1);
 	SSD1306_UpdateScreen(); // update screen
-	cycle_end = 1;
+	
 	end = TIM2->CNT;
 	total_time = end - start;
 	start = TIM2->CNT;
-	if(!once){
-		sprintf(buf,"\n\rVieno ciklo trukme: %lf",end);
+	#ifdef SEND_SLEEP_TIME
+	//if(!once){
+		sprintf(buf,"\n\rVieno ciklo trukme: %lf",total_time);
 		HAL_UART_Transmit(&huart1,(uint8_t*)buf,strlen((char*)buf),HAL_MAX_DELAY);
 		sprintf(buf,"\n\rMiegojimo trukmes suma: %lf",sleep_sum);
 		HAL_UART_Transmit(&huart1,(uint8_t*)buf,strlen((char*)buf),HAL_MAX_DELAY);
-		once=1;
-	}
+		sleep_sum = 0;
+		//once=1;
+	//}
+	#endif
 }
-/*
-void statechart_sleep(Statechart* handle){
-	#ifdef ENABLE_SLEEP
-		HAL_SuspendTick();
-		HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON,PWR_SLEEPENTRY_WFI);
-		HAL_ResumeTick();
-		statechart_raise_timerIntr(&sc_handle);
-		#endif
-}
-*/
+
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc){
 	statechart_raise_eV_ADC_SampleReady(&sc_handle);
 }
@@ -231,18 +239,24 @@ int main(void)
   MX_DMA_Init();
   MX_I2C1_Init();
   MX_ADC1_Init();
-  MX_TIM6_Init();
+  //MX_TIM6_Init();
   MX_TIM2_Init();
   MX_USART1_UART_Init();
+  MX_RTC_Init();
   /* USER CODE BEGIN 2 */
+	/*
 	if(HAL_TIM_Base_Start_IT(&htim6) != HAL_OK) //run TIM6 timer
  {
   MyErrorHandler();
- }
+ }*/
 
+ if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 0xC8, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
+  {
+    Error_Handler();
+  }
+	
 	BME280_Config(OSRS_2, OSRS_1, OSRS_1, MODE_NORMAL, T_SB_0p5, IIR_16);
 	SSD1306_Init(); 
-	HAL_ADC_Start_DMA(&hadc1,(uint32_t*)adc_rawdata,NUM_ADC_CHANNELS);
 	HAL_TIM_Base_Start(&htim2);
 	statechart_init(&sc_handle);
 	statechart_enter(&sc_handle);
@@ -253,20 +267,20 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-			#ifdef ENABLE_SLEEP
-
+		#ifdef ENABLE_SLEEP
 		HAL_SuspendTick();
 		
-		//HAL_ADC_Stop_DMA(&hadc1);
 		sleep_start = TIM2->CNT; // Sleep nuskaitymas
 		HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON,PWR_SLEEPENTRY_WFI);
-		sleep_end = TIM2->CNT;
 		
-		//HAL_ADC_Start_DMA(&hadc1,(uint32_t*)adc_rawdata,NUM_ADC_CHANNELS);
+		sleep_end = TIM2->CNT;
 
-		if(!cycle_end){
 		sleep_sum +=(sleep_end-sleep_start);
-		}
+		#endif
+		
+		#ifdef ENABLE_STOP
+		HAL_SuspendTick();
+		HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
 		#endif
     /* USER CODE END WHILE */
 
@@ -293,8 +307,9 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLM = 4;
@@ -431,6 +446,77 @@ static void MX_I2C1_Init(void)
 }
 
 /**
+  * @brief RTC Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_RTC_Init(void)
+{
+
+  /* USER CODE BEGIN RTC_Init 0 */
+
+  /* USER CODE END RTC_Init 0 */
+
+  RTC_TimeTypeDef sTime = {0};
+  RTC_DateTypeDef sDate = {0};
+
+  /* USER CODE BEGIN RTC_Init 1 */
+
+  /* USER CODE END RTC_Init 1 */
+
+  /** Initialize RTC Only
+  */
+  hrtc.Instance = RTC;
+  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
+  hrtc.Init.AsynchPrediv = 127;
+  hrtc.Init.SynchPrediv = 255;
+  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
+  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
+  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
+  if (HAL_RTC_Init(&hrtc) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /* USER CODE BEGIN Check_RTC_BKUP */
+
+  /* USER CODE END Check_RTC_BKUP */
+
+  /** Initialize RTC and set the Time and Date
+  */
+  sTime.Hours = 0x0;
+  sTime.Minutes = 0x0;
+  sTime.Seconds = 0x0;
+  sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+  sTime.StoreOperation = RTC_STOREOPERATION_RESET;
+  if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sDate.WeekDay = RTC_WEEKDAY_MONDAY;
+  sDate.Month = RTC_MONTH_JANUARY;
+  sDate.Date = 0x1;
+  sDate.Year = 0x0;
+
+  if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BCD) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Enable the WakeUp
+  */
+  __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
+  /*if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 0, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
+  {
+    Error_Handler();
+  }*/
+  /* USER CODE BEGIN RTC_Init 2 */
+
+  /* USER CODE END RTC_Init 2 */
+
+}
+
+/**
   * @brief TIM2 Initialization Function
   * @param None
   * @retval None
@@ -493,9 +579,9 @@ static void MX_TIM6_Init(void)
 
   /* USER CODE END TIM6_Init 1 */
   htim6.Instance = TIM6;
-  htim6.Init.Prescaler = 50000-1;
+  htim6.Init.Prescaler = 20000-1;
   htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim6.Init.Period = 400-1;
+  htim6.Init.Period = 100-1;
   htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
   {
